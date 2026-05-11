@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Minimalist Local MindMap</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --panel-bg: rgba(255, 255, 255, 0.9);
+        }
+        body, html { 
+            margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden;
+            font-family: -apple-system, "Inter", sans-serif;
+            background-color: #f1f5f9;
+        }
+
+        /* --- UI 疊加層 --- */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1000; }
+        .panel { pointer-events: auto; background: var(--surface); padding: 8px 12px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: flex; gap: 8px; align-items: center; border: 1px solid #e2e8f0; }
+        
+        #top-bar { position: absolute; top: 15px; left: 15px; }
+        #side-panel { position: absolute; right: 15px; top: 15px; display: none; flex-direction: column; width: 160px; }
+        #history-panel { position: absolute; top: 70px; left: 15px; display: none; flex-direction: column; max-height: 300px; overflow-y: auto; min-width: 250px; }
+        #bg-panel { position: absolute; bottom: 15px; right: 15px; flex-direction: column; align-items: flex-start; gap: 5px; }
+
+        button, select { cursor: pointer; padding: 5px 10px; border: 1px solid #e2e8f0; border-radius: 6px; background: white; font-size: 13px; font-weight: 600; }
+        button:hover { background: #f8fafc; border-color: var(--primary); }
+        .btn-primary { background: var(--primary); color: white; border: none; }
+        
+        .history-item { padding: 10px; border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 12px; width: 100%; text-align: left; background: none; transition: 0.2s; }
+        .history-item:hover { background: #eff6ff; color: var(--primary); }
+
+        /* --- 背景網格系統 --- */
+        #grid-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: 0.3; }
+
+        /* --- SVG 與 節點 --- */
+        #canvas-wrapper { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; cursor: grab; }
+        .link { fill: none; stroke: #cbd5e1; stroke-width: 3px; }
+        .node rect { cursor: pointer; rx: 8; transition: stroke 0.2s; }
+        
+        /* 文字輸入框 */
+        .floating-input { position: absolute; border: 3px solid var(--primary); border-radius: 8px; text-align: center; font-family: inherit; font-weight: 700; outline: none; z-index: 9999; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+    </style>
+</head>
+<body>
+
+<div id="grid-bg"></div>
+
+<div id="ui-layer">
+    <div id="top-bar" class="panel">
+        <button onclick="saveData()">💾 儲存</button>
+        <button onclick="toggleHistory()">📜 歷史紀錄</button>
+        <button onclick="undo()">↩️ 上一步 (Undo)</button>
+        <div style="width:1px; height:20px; background:#e2e8f0;"></div>
+        <button onclick="autoArrange()" class="btn-primary">✨ 整列</button>
+        <button onclick="applyRandomDesign()" style="color:#7e22ce;">🎨 隨機色</button>
+        <button onclick="recenter()">🎯 置中</button>
+    </div>
+
+    <div id="history-panel" class="panel"></div>
+
+    <div id="side-panel" class="panel">
+        <span style="font-size:10px; color:#64748b; font-weight:800;">文字大小</span>
+        <select id="fontSizeSelect" onchange="updateNodes('size', this.value)">
+            <option value="12">12px</option>
+            <option value="14" selected>14px</option>
+            <option value="18">18px</option>
+            <option value="24">24px</option>
+            <option value="32">32px</option>
+        </select>
+        <span style="font-size:10px; color:#64748b; font-weight:800; margin-top:10px;">快速選色</span>
+        <div style="display:flex; gap:5px;">
+            <div style="background:#3b82f6; width:22px; height:22px; border-radius:50%; cursor:pointer;" onclick="updateNodes('bg', '#3b82f6')"></div>
+            <div style="background:#10b981; width:22px; height:22px; border-radius:50%; cursor:pointer;" onclick="updateNodes('bg', '#10b981')"></div>
+            <div style="background:#ef4444; width:22px; height:22px; border-radius:50%; cursor:pointer;" onclick="updateNodes('bg', '#ef4444')"></div>
+            <div style="background:#ffffff; width:22px; height:22px; border-radius:50%; border:1px solid #ccc; cursor:pointer;" onclick="updateNodes('bg', '#ffffff')"></div>
+        </div>
+        <button onclick="deleteNode()" style="color:#ef4444; margin-top:8px;">🗑️ 刪除節點</button>
+    </div>
+
+    <div id="bg-panel" class="panel">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:10px; font-weight:800;">畫布顏色</span>
+            <input type="color" value="#f1f5f9" onchange="document.body.style.backgroundColor=this.value" style="width:20px; height:20px; border:none; padding:0;">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:10px; font-weight:800;">網格縮放</span>
+            <input type="range" min="10" max="100" value="30" oninput="updateGridStyle('size', this.value)" style="width:60px;">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:10px; font-weight:800;">網格亮度</span>
+            <input type="range" min="0" max="100" value="30" oninput="updateGridStyle('opacity', this.value)" style="width:60px;">
+        </div>
+    </div>
+</div>
+
+<div id="canvas-wrapper">
+    <svg id="mindmap-svg" width="100%" height="100%"></svg>
+    <div id="html-overlay" style="position:absolute; top:0; left:0; pointer-events:none; z-index:500;"></div>
+</div>
+
+<script>
+    // --- 資料與狀態 ---
+    let data = { id: "root", name: "中心主題", color: "#2563eb", textColor: "#ffffff", fontSize: "32", offsetX: 0, offsetY: 0, children: [] };
+    let selectedNodes = new Set(["root"]);
+    let undoStack = [];
+    let currentGridSize = 30;
+
+    function pushUndo() {
+        undoStack.push(JSON.stringify(data));
+        if(undoStack.length > 40) undoStack.shift();
+    }
+
+    window.undo = () => {
+        if(undoStack.length > 0) {
+            data = JSON.parse(undoStack.pop());
+            selectedNodes.clear(); selectedNodes.add("root");
+            render();
+        }
+    };
+
+    // --- 畫布初始化 ---
+    const svg = d3.select("#mindmap-svg");
+    const gAll = svg.append("g");
+    const linkGroup = gAll.append("g");
+    const nodeGroup = gAll.append("g");
+
+    let zoomBehavior = d3.zoom().on("zoom", (e) => {
+        gAll.attr("transform", e.transform);
+        updateGridPosition(e.transform);
+    });
+    svg.call(zoomBehavior).on("dblclick.zoom", null);
+    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(window.innerWidth/2, window.innerHeight/2));
+
+    const tree = d3.tree().nodeSize([80, 250]);
+    let rootD3;
+
+    function render() {
+        rootD3 = d3.hierarchy(data);
+        tree(rootD3);
+
+        if(rootD3.children) {
+            rootD3.children.forEach((c, i) => {
+                c._side = (i % 2 === 0) ? 1 : -1;
+                c.descendants().forEach(d => d.y = d.y * c._side);
+            });
+        }
+
+        rootD3.descendants().forEach(d => {
+            d.vX = d.y + (d.parent ? d.parent.cX : 0) + (d.data.offsetX || 0);
+            d.vY = d.x + (d.parent ? d.parent.cY : 0) + (d.data.offsetY || 0);
+            d.cX = (d.parent ? d.parent.cX : 0) + (d.data.offsetX || 0);
+            d.cY = (d.parent ? d.parent.cY : 0) + (d.data.offsetY || 0);
+            const fs = parseInt(d.data.fontSize || 14);
+            d.w = Math.max(100, d.data.name.length * fs * 1.1 + 40);
+            d.h = fs + 24;
+        });
+
+        const links = linkGroup.selectAll(".link").data(rootD3.links(), d => d.target.data.id);
+        links.exit().remove();
+        links.enter().append("path").attr("class", "link").merge(links).transition().duration(200).attr("d", d => {
+            const off = Math.abs(d.target.vX - d.source.vX) * 0.4;
+            return `M${d.source.vX},${d.source.vY} C${d.source.vX + (d.target.vX >= d.source.vX ? off : -off)},${d.source.vY} ${d.target.vX - (d.target.vX >= d.source.vX ? off : -off)},${d.target.vY} ${d.target.vX},${d.target.vY}`;
+        });
+
+        const nodes = nodeGroup.selectAll(".node").data(rootD3.descendants(), d => d.data.id);
+        nodes.exit().remove();
+        const nEnter = nodes.enter().append("g").attr("class", "node")
+            .on("click", (e, d) => { e.stopPropagation(); selectedNodes.clear(); selectedNodes.add(d.data.id); updateUI(); renderSelection(); })
+            .on("dblclick", (e, d) => { e.stopPropagation(); editNode(d); })
+            .call(d3.drag().on("start", (e, d) => { pushUndo(); if(!selectedNodes.has(d.data.id)){ selectedNodes.clear(); selectedNodes.add(d.data.id); } renderSelection(); })
+                           .on("drag", (e, d) => { selectedNodes.forEach(id => { const n = rootD3.descendants().find(x => x.data.id === id); if(n){ n.data.offsetX = (n.data.offsetX || 0) + e.dx; n.data.offsetY = (n.data.offsetY || 0) + e.dy; } }); render(); })
+                           .on("end", render));
+
+        nEnter.append("rect"); nEnter.append("text").attr("text-anchor", "middle");
+        const m = nEnter.merge(nodes);
+        m.attr("transform", d => `translate(${d.vX},${d.vY})`);
+        m.select("rect").attr("width", d => d.w).attr("height", d => d.h).attr("x", d => -d.w/2).attr("y", d => -d.h/2).style("fill", d => d.data.color || "#2563eb");
+        m.select("text").text(d => d.data.name).attr("dy", d => (parseInt(d.data.fontSize || 14) * 0.35)).style("fill", d => d.data.textColor || "#fff").style("font-size", d => (d.data.fontSize || 14)+"px");
+        renderSelection();
+    }
+
+    function renderSelection() { nodeGroup.selectAll("rect").style("stroke", d => selectedNodes.has(d.data.id) ? "#ef4444" : "none").style("stroke-width", "3px"); }
+
+    function editNode(d) {
+        const overlay = document.getElementById("html-overlay");
+        const transform = d3.zoomTransform(svg.node());
+        const input = document.createElement("input");
+        input.className = "floating-input";
+        input.value = d.data.name;
+        const w = (d.w * transform.k) + 10, h = (d.h * transform.k) + 5;
+        input.style.width = w + "px"; input.style.height = h + "px";
+        input.style.left = (d.vX * transform.k + transform.x - w/2) + "px";
+        input.style.top = (d.vY * transform.k + transform.y - h/2) + "px";
+        input.style.backgroundColor = d.data.color; input.style.color = d.data.textColor; input.style.fontSize = (parseInt(d.data.fontSize)*transform.k)+"px";
+        overlay.appendChild(input); input.focus(); input.select();
+        const done = () => { if(input.value.trim()){ d.data.name = input.value; render(); } input.remove(); };
+        input.onblur = done; input.onkeydown = e => { if(e.key === 'Enter') done(); e.stopPropagation(); };
+    }
+
+    function updateGridStyle(type, val) {
+        const bg = document.getElementById("grid-bg");
+        if(type === 'size') currentGridSize = val;
+        if(type === 'opacity') bg.style.opacity = val/100;
+        updateGridPosition(d3.zoomTransform(svg.node()));
+    }
+
+    function updateGridPosition(t) {
+        const bg = document.getElementById("grid-bg");
+        const s = currentGridSize * t.k;
+        bg.style.backgroundImage = `linear-gradient(#cbd5e1 1px, transparent 1px), linear-gradient(90deg, #cbd5e1 1px, transparent 1px)`;
+        bg.style.backgroundSize = `${s}px ${s}px`;
+        bg.style.backgroundPosition = `${t.x}px ${t.y}px`;
+    }
+
+    document.addEventListener("keydown", (e) => {
+        if(document.activeElement.tagName === 'INPUT') return;
+        if((e.ctrlKey || e.metaKey) && e.key === 'z'){ e.preventDefault(); undo(); return; }
+        if(selectedNodes.size === 0) return;
+        
+        if(e.key === "Backspace" || e.key === "Delete"){
+            e.preventDefault(); pushUndo();
+            selectedNodes.forEach(id => { if(id !== "root"){ 
+                const del = (p) => { if(p.children){ const idx = p.children.findIndex(c => c.id === id); if(idx !== -1){ p.children.splice(idx, 1); return true; } for(let c of p.children) if(del(c)) return true; } return false; };
+                del(data);
+            }});
+            selectedNodes.clear(); selectedNodes.add("root"); render(); updateUI();
+        }
+
+        if(e.key === "Enter" || e.key === "Tab"){
+            e.preventDefault(); pushUndo();
+            let next = new Set();
+            selectedNodes.forEach(id => {
+                const addNode = (n) => {
+                    if(n.id === id){
+                        let newNode = { id: "n"+Math.random(), name: "新節點", color: n.color, textColor: n.textColor, fontSize: "14", offsetX: 0, offsetY: 0 };
+                        if(e.key === "Enter"){ if(!n.children) n.children = []; n.children.push(newNode); next.add(newNode.id); return true; }
+                    }
+                    if(n.children){
+                        if(e.key === "Tab" && id !== "root"){
+                            const idx = n.children.findIndex(c => c.id === id);
+                            if(idx !== -1){ let newNode = { id: "n"+Math.random(), name: "新節點", color: n.color, textColor: n.textColor, fontSize: "14", offsetX: 0, offsetY: 0 }; n.children.splice(idx+1, 0, newNode); next.add(newNode.id); return true; }
+                        }
+                        for(let c of n.children) if(addNode(c)) return true;
+                    }
+                    return false;
+                };
+                addNode(data);
+            });
+            if(next.size > 0){ selectedNodes = next; render(); updateUI(); }
+        }
+    });
+
+    // --- 工具與儲存功能 ---
+    window.updateUI = () => document.getElementById("side-panel").style.display = selectedNodes.size > 0 ? "flex" : "none";
+    window.updateNodes = (t, v) => { pushUndo(); const a = n => { if(selectedNodes.has(n.id)){ if(t==='bg') n.color = v; if(t==='size') n.fontSize = v; } if(n.children) n.children.forEach(a); }; a(data); render(); };
+    window.autoArrange = () => { pushUndo(); const r = n => { n.offsetX = 0; n.offsetY = 0; if(n.children) n.children.forEach(r); }; r(data); render(); };
+    window.recenter = () => svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity.translate(window.innerWidth/2, window.innerHeight/2));
+    window.applyRandomDesign = () => {
+        pushUndo(); const colors = ["#3b82f6", "#10b981", "#ef4444", "#f59e0b", "#8b5cf6"];
+        if(data.children) data.children.forEach((ch, i) => { 
+            const c = colors[i % 5];
+            const f = n => { n.color = c; n.textColor = "#fff"; if(n.children) n.children.forEach(f); }; f(ch);
+        }); render();
+    };
+
+    // ★ 更新：儲存名稱為「中心項目 + 日期」[cite: 1, 2]
+    window.saveData = () => {
+        const hist = JSON.parse(localStorage.getItem("local_mindmap_v4") || "[]");
+        const centerName = data.name || "未命名項目";
+        const dateStr = new Date().toLocaleString('zh-TW', { hour12: false });
+        const saveName = `${centerName} (${dateStr})`;
+        
+        hist.unshift({ 
+            displayName: saveName, 
+            data: JSON.parse(JSON.stringify(data)) 
+        });
+        localStorage.setItem("local_mindmap_v4", JSON.stringify(hist.slice(0, 25)));
+        alert(`已儲存：${saveName}`);
+    };
+
+    window.toggleHistory = () => {
+        const p = document.getElementById("history-panel");
+        p.style.display = p.style.display === "none" ? "flex" : "none";
+        const hist = JSON.parse(localStorage.getItem("local_mindmap_v4") || "[]");
+        p.innerHTML = hist.length ? hist.map((h, i) => `<button class="history-item" onclick="restore(${i})">🕒 ${h.displayName}</button>`).join("") : "<div style='padding:10px; font-size:12px; color:#999;'>尚無紀錄</div>";
+    };
+
+    window.restore = i => { 
+        data = JSON.parse(localStorage.getItem("local_mindmap_v4"))[i].data; 
+        selectedNodes.clear(); selectedNodes.add("root");
+        render(); 
+        document.getElementById("history-panel").style.display = "none"; 
+    };
+
+    render();
+    updateGridStyle('size', 30);
+</script>
+</body>
+</html>
